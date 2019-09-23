@@ -1,0 +1,351 @@
+#!/usr/bin/php
+<?php
+
+new XWordPress($argv);
+
+/**
+ * Class XWordPress
+ * Use xgettext to extract strings from PHP files using input file X-Poedit-*
+ * settings and append WordPress headers strings if X-Poedit-WPHeader is set.
+ */
+class XWordPress
+{
+    private $command;
+    private $source;
+
+    private $encoding = 'UTF-8';
+    private $keywords = ['__', '_e'];
+
+    private $rawHeaders;
+    private $basePath = null;
+    private $searchPaths = [];
+    private $excludedPaths = [];
+    private $headerFile = null;
+    private $projectId = null;
+    private $xgettextFlags = '';
+    private $wordpressHeaders = [];
+
+    public function __construct($argv)
+    {
+        $this->command = basename($argv[0]);
+
+        // Checks
+        if (empty($argv[1])) {
+            $this->error("No input file has been given");
+        }
+
+        $this->source = realpath($argv[1]);
+        if (!file_exists($this->source)) {
+            $this->error("Input file does not exists");
+        }
+
+        $extension = pathinfo($this->source, PATHINFO_EXTENSION);
+        if (!in_array($extension, ['po', 'pot'])) {
+            $this->error("Only supports PO and POT files");
+        }
+
+        chdir(realpath(pathinfo($this->source, PATHINFO_DIRNAME)));
+
+        $this->loadHeaders();
+
+        if (!$this->basePath) {
+            $this->error("Can not find X-Poedit-Basepath header");
+        }
+
+        if (count($this->searchPaths) < 1) {
+            $this->error("Can not find X-Poedit-SearchPath-0 header, at least on X-Poedit-SearchPath-* header is expected");
+        }
+
+        if (!$this->headerFile) {
+            $this->warn("Can not find X-Poedit-WPHeader, theme or plugin metadata wont be extracted");
+        }
+
+
+        $outputFile = tempnam('/tmp/', 'xwordpress');
+
+        // Run xgettext to extract strings
+        $this->extractToFile($outputFile);
+
+        // Append WordPress headers to translatable strings
+        $this->appendWordpressHeaders($outputFile);
+
+        // Clean output
+        $this->cleanOutput($outputFile);
+
+//        echo file_get_contents($outputFile) . "\n\n";
+
+        $this->updateSource($outputFile);
+
+        unlink($outputFile);
+    }
+
+    private function error($message, $command = '')
+    {
+        printf(
+            "\033[0;31mError: %s\033[0m\n%s",
+            $message,
+            $command ? "Command was:\n" . $command . "\n" : ""
+        );
+        exit(1);
+    }
+
+    private function warn($message)
+    {
+        printf("\033[0;33mWarning: %s\033[0m\n", $message);
+    }
+
+    private function loadHeaders()
+    {
+        // Extract raw headers from source PO/POT file
+        $content = file_get_contents($this->source);
+        if (!preg_match('/msgid\s*""\nmsgstr\s*(("[^"]*"\n)*)/ms', $content, $m)) {
+            $this->error("Error parsing file $this->source");
+        }
+
+        if (!preg_match_all('/^"([^"]+)"$/m', $m[1], $m)) {
+            $this->error("Error parsing file $this->source");
+        }
+
+        $this->rawHeaders = [];
+        foreach (explode('\n', implode('', $m[1])) as $line) {
+            if (preg_match('/^([^:]+):\s(.*)$/', $line, $header)) {
+                $this->rawHeaders[$header[1]] = $header[2];
+            }
+        }
+
+        // Encoding
+        if (array_key_exists('Content-Type', $this->rawHeaders)
+            && preg_match('/\bcharset=(.*)/', $this->rawHeaders['Content-Type'], $m)) {
+            $this->encoding = $m[1];
+        }
+
+        // Keywords
+        if (array_key_exists('X-Poedit-KeywordsList', $this->rawHeaders)) {
+            $this->keywords = explode(';', $this->rawHeaders['X-Poedit-KeywordsList']);
+        }
+
+        // Base path
+        if (array_key_exists('X-Poedit-Basepath', $this->rawHeaders)) {
+            $path = $this->rawHeaders['X-Poedit-Basepath'];
+            if (!file_exists($path)) {
+                $this->error(sprintf('Basepath not found (%s)', $path));
+            } else {
+                $this->basePath = realpath($path);
+                chdir($this->basePath);
+//                echo "CWD: ". getcwd() ."\n\n";
+            }
+        }
+
+        // Search paths
+        foreach ($this->rawHeaders as $key => $value) {
+            if (!preg_match('/X-Poedit-SearchPath-[0-9]+/', $key)) {
+                continue;
+            }
+            if (!file_exists($value)) {
+                $this->warn(sprintf("Search path does not exists: %s", $value));
+                continue;
+            }
+            $this->searchPaths[] = $value;
+        }
+
+        // Excluded paths
+        foreach ($this->rawHeaders as $key => $value) {
+            if (preg_match('/X-Poedit-SearchPathExcluded-[0-9]+/', $key)) {
+                $this->excludedPaths[] = $value;
+            }
+        }
+
+        // Header file
+        if (array_key_exists('X-Poedit-WPHeader', $this->rawHeaders)) {
+            $this->headerFile = $this->rawHeaders['X-Poedit-WPHeader'];
+
+            // Prepare headers to extract
+            $extension = pathinfo($this->headerFile, PATHINFO_EXTENSION);
+            switch ($extension) {
+                case 'php':
+                    $this->wordpressHeaders = [
+                        'Name'        => 'Plugin Name',
+                        'URI'         => 'Plugin URI',
+                        'Description' => 'Description',
+                    ];
+                    break;
+                case 'css':
+                    $this->wordpressHeaders = [
+                        'Name' => 'Theme Name',
+                        'URI'  => 'Theme URI',
+                    ];
+                    break;
+                default:
+                    $this->error(sprintf(
+                        "php and css are the only supported file types for WPHeader (%s given)",
+                        $extension
+                    ));
+            }
+            $this->wordpressHeaders['Author'] = 'Author';
+            $this->wordpressHeaders['Author URI'] = 'Author URI';
+        }
+
+        // Project Id
+        if (array_key_exists('Project-Id-Version', $this->rawHeaders)) {
+            $this->projectId = $this->rawHeaders['Project-Id-Version'];
+        }
+
+        // xgettext flags
+        if (array_key_exists('X-Poedit-Flags-xgettext', $this->rawHeaders)) {
+            $this->xgettextFlags = $this->rawHeaders['X-Poedit-Flags-xgettext'];
+        }
+    }
+
+    /**
+     * @return string The find command to execute
+     */
+    private function getFindCommand(): string
+    {
+        $findCommand = sprintf(
+            'find %s -iname "*.php" -type f %s',
+            // search paths
+            implode(' ', array_map(function ($path) {
+                return $path == '.' ? $path : './' . $path;
+            }, $this->searchPaths)),
+            // excluded paths
+            implode(' ', array_filter(array_map(function ($value) {
+                if (strpos($value, '*') !== false) {
+                    // match pattern at the end of file paths
+                    return sprintf(' | grep -v -P \'%s$\'', str_replace('*', '.*', $value));
+                }
+                if (file_exists($value)) {
+                    // match value at the begining of file paths
+                    return sprintf(' | grep -v -P \'^\./%s/.*\'', $value);
+                }
+                return false;
+            }, $this->excludedPaths)))
+        );
+
+//        echo $findCommand . "\n\n";
+
+        return $findCommand;
+    }
+
+    /**
+     * @param $outputFile
+     * @return void
+     */
+    private function extractToFile($outputFile)
+    {
+        $xgettextCommand = sprintf(
+            'xgettext --language=PHP %1$s %2$s --from-code=%3$s %4$s -o %5$s `%6$s`',
+            $this->projectId ? ' --package-name="' . $this->projectId . '"' : '',
+            $this->xgettextFlags,
+            $this->encoding,
+            implode(' ', array_map(function ($keyword) {
+                return '-k' . $keyword;
+            }, $this->keywords)),
+            $outputFile,
+            $this->getFindCommand()
+        );
+
+        echo $xgettextCommand . "\n\n";
+
+        passthru($xgettextCommand, $return_var);
+        if ($return_var !== 0) {
+            $this->error(sprintf("xgettext command returned error %s", $return_var), $xgettextCommand);
+        }
+
+        // Clean
+        $cleanCommand = sprintf(
+            'sed -i -r \'s|^("Content-Type:\s*[^;]+;\s*charset=)CHARSET|\1%s|\' %s',
+            $this->encoding,
+            $outputFile
+        );
+        
+//        echo $cleanCommand ."\n";
+        
+        passthru($cleanCommand);
+    }
+
+    /**
+     * @param $outputFile
+     * @return void
+     * @see wp/wp-includes/functions.php:get_file_data()
+     */
+    private function appendWordpressHeaders($outputFile)
+    {
+        if ($this->headerFile) {
+            $handle = fopen($this->headerFile, 'r');
+
+            // Pull only the first 8kiB of the file in.
+            $fileData = fread($handle, 8192);
+            fclose($handle);
+
+            // Make sure we catch CR-only line endings.
+            $fileData = str_replace("\r", "\n", $fileData);
+
+            // Parse file data and append to $outputFile
+            $handle = fopen($outputFile, 'a');
+            foreach ($this->wordpressHeaders as $field => $regex) {
+                if (!preg_match('/^[ \t\/*#@]*' . preg_quote($regex, '/') . ':(.*)$/mi', $fileData, $m)) {
+                    continue;
+                }
+                fputs($handle, sprintf(
+                    "\n\n#: %s\n#. %s of the plugin/theme\nmsgid \"%s\"\nmsgstr \"\"",
+                    $this->headerFile,
+                    $field,
+                    trim(preg_replace('/\s*(?:\*\/|\?>).*/', '', $m[1]))
+                ));
+            }
+            fclose($handle);
+        }
+    }
+
+    /**
+     * @param $outputFile
+     * @return array
+     */
+    private function cleanOutput($outputFile)
+    {
+        $tempFile = tempnam('/tmp/', 'xwordpress');
+        $cleanCommand = sprintf(
+            'msguniq -t %2$s --color=never --sort-output %1$s | grep -v -P "^#. #-#-#-#-#" > %3$s; mv %3$s %1$s',
+            $outputFile,
+            $this->encoding,
+            $tempFile
+        );
+        exec($cleanCommand, $output, $return_var);
+        if ($return_var !== 0) {
+            echo implode("\n", $output);
+            $this->error(sprintf("cleaning command return error %s", $return_var));
+        }
+        return array($output, $return_var);
+    }
+
+    private function updateSource($outputFile)
+    {
+        // Create temp file for the merge
+        $tempFile = tempnam('/tmp/', 'xwordpress');
+        copy($this->source, $tempFile);
+
+        // Update temp file
+        $updateCommand = sprintf('msgmerge --previous -F -U %s %s', $tempFile, $outputFile);
+        exec($updateCommand, $output, $return_var);
+        if ($return_var !== 0) {
+            echo implode("\n", $output);
+            $this->error(sprintf(
+                "Update command (msgmerge) returned error %s",
+                $return_var
+            ));
+        }
+
+//        echo file_get_contents($tempFile);
+
+        // Display changes on STDOUT
+        passthru(sprintf(
+            'diff --color=always %s %s',
+            $this->source,
+            $tempFile
+        ), $return_var);
+
+        // Update source
+        copy($tempFile, $this->source);
+        unlink($tempFile);
+    }
+}
