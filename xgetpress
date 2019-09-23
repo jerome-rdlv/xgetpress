@@ -1,17 +1,20 @@
 #!/usr/bin/php
 <?php
 
-new XWordPress($argv);
+new XGetPress($argv);
 
 /**
- * Class XWordPress
  * Use xgettext to extract strings from PHP files using input file X-Poedit-*
  * settings and append WordPress headers strings if X-Poedit-WPHeader is set.
+ * Resulting data is used to update the input file.
  */
-class XWordPress
+class XGetPress
 {
+    const TYPE_PLUGIN = 'plugin';
+    const TYPE_THEME = 'theme';
+
     private $command;
-    private $source;
+    private $inputFile;
 
     private $encoding = 'UTF-8';
     private $keywords = ['__', '_e'];
@@ -20,69 +23,62 @@ class XWordPress
     private $basePath = null;
     private $searchPaths = [];
     private $excludedPaths = [];
-    private $headerFile = null;
     private $projectId = null;
     private $xgettextFlags = '';
+
+    private $headerFile = null;
+    private $sourceType;
     private $wordpressHeaders = [];
 
     public function __construct($argv)
     {
         $this->command = basename($argv[0]);
 
-        // Checks
         if (empty($argv[1])) {
-            $this->error("No input file has been given");
+            $this->error('No input file has been given');
         }
 
-        $this->source = realpath($argv[1]);
-        if (!file_exists($this->source)) {
-            $this->error("Input file does not exists");
+        $this->inputFile = realpath($argv[1]);
+        if (!file_exists($this->inputFile)) {
+            $this->error('Input file does not exists');
         }
 
-        $extension = pathinfo($this->source, PATHINFO_EXTENSION);
+        $extension = pathinfo($this->inputFile, PATHINFO_EXTENSION);
         if (!in_array($extension, ['po', 'pot'])) {
-            $this->error("Only supports PO and POT files");
+            $this->error('Only supports PO and POT files');
         }
 
-        chdir(realpath(pathinfo($this->source, PATHINFO_DIRNAME)));
+        chdir(realpath(pathinfo($this->inputFile, PATHINFO_DIRNAME)));
 
         $this->loadHeaders();
 
         if (!$this->basePath) {
-            $this->error("Can not find X-Poedit-Basepath header");
+            $this->error('Can not find X-Poedit-Basepath header');
         }
 
         if (count($this->searchPaths) < 1) {
-            $this->error("Can not find X-Poedit-SearchPath-0 header, at least on X-Poedit-SearchPath-* header is expected");
+            $this->error('Can not find X-Poedit-SearchPath-0 header, at least on X-Poedit-SearchPath-* header is expected');
         }
 
         if (!$this->headerFile) {
-            $this->warn("Can not find X-Poedit-WPHeader, theme or plugin metadata wont be extracted");
+            $this->warn('Can not find X-Poedit-WPHeader, theme or plugin metadata wont be extracted');
         }
 
+        $outputFile = tempnam('/tmp/', 'xgetpress');
 
-        $outputFile = tempnam('/tmp/', 'xwordpress');
-
-        // Run xgettext to extract strings
-        $this->extractToFile($outputFile);
-
-        // Append WordPress headers to translatable strings
-        $this->appendWordpressHeaders($outputFile);
-
-        // Clean output
-        $this->cleanOutput($outputFile);
-
-//        echo file_get_contents($outputFile) . "\n\n";
-
+        $this->extractTranslatableStringsFromSources($outputFile);
+        $this->appendWordpressTranslatableHeaders($outputFile);
+        $this->resolveDuplicateSourceStrings($outputFile);
         $this->updateSource($outputFile);
 
         unlink($outputFile);
     }
 
-    private function error($message, $command = '')
+    private function error($message, $code = '', $command = '')
     {
         printf(
-            "\033[0;31mError: %s\033[0m\n%s",
+            "\033[0;31mError%s: %s\033[0m\n%s",
+            $code ? ' ' . $code : '',
             $message,
             $command ? "Command was:\n" . $command . "\n" : ""
         );
@@ -97,13 +93,13 @@ class XWordPress
     private function loadHeaders()
     {
         // Extract raw headers from source PO/POT file
-        $content = file_get_contents($this->source);
+        $content = file_get_contents($this->inputFile);
         if (!preg_match('/msgid\s*""\nmsgstr\s*(("[^"]*"\n)*)/ms', $content, $m)) {
-            $this->error("Error parsing file $this->source");
+            $this->error("Error parsing file $this->inputFile");
         }
 
         if (!preg_match_all('/^"([^"]+)"$/m', $m[1], $m)) {
-            $this->error("Error parsing file $this->source");
+            $this->error("Error parsing file $this->inputFile");
         }
 
         $this->rawHeaders = [];
@@ -131,8 +127,9 @@ class XWordPress
                 $this->error(sprintf('Basepath not found (%s)', $path));
             } else {
                 $this->basePath = realpath($path);
+
+                // chdir to base directory
                 chdir($this->basePath);
-//                echo "CWD: ". getcwd() ."\n\n";
             }
         }
 
@@ -163,6 +160,7 @@ class XWordPress
             $extension = pathinfo($this->headerFile, PATHINFO_EXTENSION);
             switch ($extension) {
                 case 'php':
+                    $this->sourceType = self::TYPE_PLUGIN;
                     $this->wordpressHeaders = [
                         'Name'        => 'Plugin Name',
                         'URI'         => 'Plugin URI',
@@ -170,6 +168,7 @@ class XWordPress
                     ];
                     break;
                 case 'css':
+                    $this->sourceType = self::TYPE_THEME;
                     $this->wordpressHeaders = [
                         'Name' => 'Theme Name',
                         'URI'  => 'Theme URI',
@@ -199,7 +198,7 @@ class XWordPress
     /**
      * @return string The find command to execute
      */
-    private function getFindCommand(): string
+    private function getFindCommand()
     {
         $findCommand = sprintf(
             'find %s -iname "*.php" -type f %s',
@@ -221,8 +220,6 @@ class XWordPress
             }, $this->excludedPaths)))
         );
 
-//        echo $findCommand . "\n\n";
-
         return $findCommand;
     }
 
@@ -230,7 +227,7 @@ class XWordPress
      * @param $outputFile
      * @return void
      */
-    private function extractToFile($outputFile)
+    private function extractTranslatableStringsFromSources($outputFile)
     {
         $xgettextCommand = sprintf(
             'xgettext --language=PHP %1$s %2$s --from-code=%3$s %4$s -o %5$s `%6$s`',
@@ -244,23 +241,16 @@ class XWordPress
             $this->getFindCommand()
         );
 
-        echo $xgettextCommand . "\n\n";
-
-        passthru($xgettextCommand, $return_var);
-        if ($return_var !== 0) {
-            $this->error(sprintf("xgettext command returned error %s", $return_var), $xgettextCommand);
-        }
+        $this->command($xgettextCommand, 'extraction failed (xgettext)');
 
         // Clean
-        $cleanCommand = sprintf(
+        $charsetCommand = sprintf(
             'sed -i -r \'s|^("Content-Type:\s*[^;]+;\s*charset=)CHARSET|\1%s|\' %s',
             $this->encoding,
             $outputFile
         );
-        
-//        echo $cleanCommand ."\n";
-        
-        passthru($cleanCommand);
+
+        $this->command($charsetCommand, 'charset update failed');
     }
 
     /**
@@ -268,7 +258,7 @@ class XWordPress
      * @return void
      * @see wp/wp-includes/functions.php:get_file_data()
      */
-    private function appendWordpressHeaders($outputFile)
+    private function appendWordpressTranslatableHeaders($outputFile)
     {
         if ($this->headerFile) {
             $handle = fopen($this->headerFile, 'r');
@@ -287,9 +277,10 @@ class XWordPress
                     continue;
                 }
                 fputs($handle, sprintf(
-                    "\n\n#: %s\n#. %s of the plugin/theme\nmsgid \"%s\"\nmsgstr \"\"",
+                    "\n\n#: %s\n#. %s of the %s\nmsgid \"%s\"\nmsgstr \"\"",
                     $this->headerFile,
                     $field,
+                    $this->sourceType,
                     trim(preg_replace('/\s*(?:\*\/|\?>).*/', '', $m[1]))
                 ));
             }
@@ -299,53 +290,44 @@ class XWordPress
 
     /**
      * @param $outputFile
-     * @return array
+     * @return void
      */
-    private function cleanOutput($outputFile)
+    private function resolveDuplicateSourceStrings($outputFile)
     {
-        $tempFile = tempnam('/tmp/', 'xwordpress');
+        $tempFile = tempnam('/tmp/', 'xgetpress');
         $cleanCommand = sprintf(
             'msguniq -t %2$s --color=never --sort-output %1$s | grep -v -P "^#. #-#-#-#-#" > %3$s; mv %3$s %1$s',
             $outputFile,
             $this->encoding,
             $tempFile
         );
-        exec($cleanCommand, $output, $return_var);
-        if ($return_var !== 0) {
-            echo implode("\n", $output);
-            $this->error(sprintf("cleaning command return error %s", $return_var));
+        $this->command($cleanCommand, 'cleaning failed (msguniq)');
+    }
+
+    private function command($command, $errorMessage = '')
+    {
+        passthru($command, $returnVar);
+        if ($returnVar !== 0) {
+            $this->error($errorMessage ? $errorMessage : 'command failed', $returnVar, $command);
         }
-        return array($output, $return_var);
     }
 
     private function updateSource($outputFile)
     {
-        // Create temp file for the merge
-        $tempFile = tempnam('/tmp/', 'xwordpress');
-        copy($this->source, $tempFile);
+        // Create temp file for the merge (allows to diff before and after state of the input file)
+        $tempFile = tempnam('/tmp/', 'xgetpress');
+        copy($this->inputFile, $tempFile);
 
         // Update temp file
         $updateCommand = sprintf('msgmerge --previous -F -U %s %s', $tempFile, $outputFile);
-        exec($updateCommand, $output, $return_var);
-        if ($return_var !== 0) {
-            echo implode("\n", $output);
-            $this->error(sprintf(
-                "Update command (msgmerge) returned error %s",
-                $return_var
-            ));
-        }
-
-//        echo file_get_contents($tempFile);
+        $this->command($updateCommand, 'merge with input file failed (msgmerge)');
 
         // Display changes on STDOUT
-        passthru(sprintf(
-            'diff --color=always %s %s',
-            $this->source,
-            $tempFile
-        ), $return_var);
+        passthru(sprintf('diff --color=always %s %s', $this->inputFile, $tempFile));
 
-        // Update source
-        copy($tempFile, $this->source);
+        // Update input file
+        copy($tempFile, $this->inputFile);
+
         unlink($tempFile);
     }
 }
