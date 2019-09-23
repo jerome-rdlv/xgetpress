@@ -3,7 +3,7 @@
 This command line utility tries to reproduce the WordPress support of [Poedit Pro][poedit]:
 
 * String extraction from sources based on `X-Poedit-` settings
-* Plugin or Theme metadata extraction from WordPress file headers
+* Plugin or theme metadata extraction from WordPress file headers
 * Input file update with new string
 
 It takes a `.pot` or `.po` file as only argument:
@@ -21,7 +21,8 @@ As for Poedit, gettext tools are used for underlying tasks:
 * `msguniq` for duplicate strings merge and resolution
 * `msgmerge` for input file update
 
-I wrote that thing mainly because I needed a CLI utility.
+I wrote that thing mainly because I needed a CLI utility
+that Poedit does not offer.
 
 **This is really fresh and there may be bugs, and possible
 discrepancies with Poedit behavior. Use at your own risks.**
