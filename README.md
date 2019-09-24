@@ -77,7 +77,7 @@ Corresponding `style.css` example:
  */
 ```
 
-With the given example, your theme name, URI, author name and author URI will be extracted as translatable string and be added to the `.pot` file.
+With the given example, your theme name, URI, author name and author URI will be extracted as translatable strings and added to the `.pot` file.
 
 ```POT
 #. Author of the theme
