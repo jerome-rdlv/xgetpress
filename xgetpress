@@ -16,7 +16,8 @@ class XGetPress
     private $command;
     private $inputFile;
 
-    private $encoding = 'UTF-8';
+    private $inputCharset = 'UTF-8';
+    private $sourcesCharset = 'UTF-8';
     private $keywords = ['__', '_e'];
 
     private $rawHeaders;
@@ -109,10 +110,15 @@ class XGetPress
             }
         }
 
-        // Encoding
+        // Input file charset
         if (array_key_exists('Content-Type', $this->rawHeaders)
             && preg_match('/\bcharset=(.*)/', $this->rawHeaders['Content-Type'], $m)) {
-            $this->encoding = $m[1];
+            $this->inputCharset = $m[1];
+        }
+        
+        // Sources charset
+        if (array_key_exists('X-Poedit-SourceCharset', $this->rawHeaders)) {
+            $this->sourcesCharset = $this->rawHeaders['X-Poedit-SourceCharset'];
         }
 
         // Keywords
@@ -233,7 +239,7 @@ class XGetPress
             'xgettext --language=PHP %1$s %2$s --from-code=%3$s %4$s -o "%5$s" `%6$s`',
             $this->projectId ? ' --package-name="' . $this->projectId . '"' : '',
             $this->xgettextFlags,
-            $this->encoding,
+            $this->sourcesCharset,
             implode(' ', array_map(function ($keyword) {
                 return '-k' . $keyword;
             }, $this->keywords)),
@@ -246,7 +252,7 @@ class XGetPress
         // Clean
         $charsetCommand = sprintf(
             'sed -i -r \'s|^("Content-Type:\s*[^;]+;\s*charset=)CHARSET|\1%s|\' %s',
-            $this->encoding,
+            $this->inputCharset,
             $outputFile
         );
 
@@ -298,7 +304,7 @@ class XGetPress
         $cleanCommand = sprintf(
             'msguniq -t %2$s --color=never --sort-output "%1$s" | grep -v -P "^#. #-#-#-#-#" > "%3$s"; mv "%3$s" "%1$s"',
             $outputFile,
-            $this->encoding,
+            $this->inputCharset,
             $tempFile
         );
         $this->command($cleanCommand, 'cleaning failed (msguniq)');
