@@ -28,12 +28,12 @@ That said, I’d be really glad to be notified of those, and I will try to corre
 
 This tool currently extract only from PHP files. Is there situations where other languages like JS should be supported? You’ll tell me.
 
-## Possible headers
+## Poedit headers
 
 Here is a list of the extended headers you can use in your `.po` or `.pot` files that will be interpreted by `xgetpress`:
 
 | Headers                           | Description     |
-|-----------------------------------|:----------------|
+|:----------------------------------|:----------------|
 | `X-Poedit-KeywordsList`           | List of the keywords to look for during extraction, separated by semicolon (;). By default `__` and `_e`. Each of these is passed to `xgettext` with option `-k`.
 | `X-Poedit-Basepath`               | Base path of your project, relative to the `.po` or `.pot` input file.
 | `X-Poedit-SearchPath-*`           | Paths to search for translatable strings. The `*` must be replaced with an incrementing number, so for two search paths you would have `X-Poedit-SearchPath-0` and `X-Poedit-SearchPath-1`. These paths are relative to the base path.
@@ -42,7 +42,7 @@ Here is a list of the extended headers you can use in your `.po` or `.pot` files
 | `X-Poedit-SourceCharset`          | Charset of your sources. Defaults to `UTF-8`
 | `X-Poedit-Flags-xgettext`         | Options to directly pass to `xgettext`, for example `--add-comments=L10N:`
 
-## Example file
+## Examples
 
 Beginning of an example `.pot` file:
 
