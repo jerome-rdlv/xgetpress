@@ -53,18 +53,6 @@ class XGetPress
 
         $this->loadHeaders();
 
-        if (!$this->basePath) {
-            $this->error('Can not find X-Poedit-Basepath header');
-        }
-
-        if (count($this->searchPaths) < 1) {
-            $this->error('Can not find X-Poedit-SearchPath-0 header, at least on X-Poedit-SearchPath-* header is expected');
-        }
-
-        if (!$this->headerFile) {
-            $this->warn('Can not find X-Poedit-WPHeader, theme or plugin metadata wont be extracted');
-        }
-
         $outputFile = tempnam('/tmp/', 'xgetpress');
 
         $this->extractTranslatableStringsFromSources($outputFile);
@@ -115,10 +103,20 @@ class XGetPress
             && preg_match('/\bcharset=(.*)/', $this->rawHeaders['Content-Type'], $m)) {
             $this->inputCharset = $m[1];
         }
-        
+
         // Sources charset
         if (array_key_exists('X-Poedit-SourceCharset', $this->rawHeaders)) {
             $this->sourcesCharset = $this->rawHeaders['X-Poedit-SourceCharset'];
+        }
+
+        // Project Id
+        if (array_key_exists('Project-Id-Version', $this->rawHeaders)) {
+            $this->projectId = $this->rawHeaders['Project-Id-Version'];
+        }
+
+        // xgettext flags
+        if (array_key_exists('X-Poedit-Flags-xgettext', $this->rawHeaders)) {
+            $this->xgettextFlags = $this->rawHeaders['X-Poedit-Flags-xgettext'];
         }
 
         // Keywords
@@ -127,17 +125,17 @@ class XGetPress
         }
 
         // Base path
-        if (array_key_exists('X-Poedit-Basepath', $this->rawHeaders)) {
-            $path = $this->rawHeaders['X-Poedit-Basepath'];
-            if (!file_exists($path)) {
-                $this->error(sprintf('Basepath not found (%s)', $path));
-            } else {
-                $this->basePath = realpath($path);
-
-                // chdir to base directory
-                chdir($this->basePath);
-            }
+        if (!array_key_exists('X-Poedit-Basepath', $this->rawHeaders)) {
+            $this->error('Can not find X-Poedit-Basepath header');
         }
+        $this->basePath = $this->rawHeaders['X-Poedit-Basepath'];
+        if (!file_exists($this->basePath)) {
+            $this->error(sprintf('Basepath does not exists: %s', $this->basePath));
+        }
+        $this->basePath = realpath($this->basePath);
+
+        // Basepath is now our reference directory
+        chdir($this->basePath);
 
         // Search paths
         foreach ($this->rawHeaders as $key => $value) {
@@ -151,6 +149,10 @@ class XGetPress
             $this->searchPaths[] = $value;
         }
 
+        if (count($this->searchPaths) < 1) {
+            $this->error('Can not find X-Poedit-SearchPath-0 header, at least on X-Poedit-SearchPath-* header is expected');
+        }
+
         // Excluded paths
         foreach ($this->rawHeaders as $key => $value) {
             if (preg_match('/X-Poedit-SearchPathExcluded-[0-9]+/', $key)) {
@@ -162,49 +164,46 @@ class XGetPress
         if (array_key_exists('X-Poedit-WPHeader', $this->rawHeaders)) {
             $this->headerFile = $this->rawHeaders['X-Poedit-WPHeader'];
 
-            // Prepare headers to extract
-            $extension = pathinfo($this->headerFile, PATHINFO_EXTENSION);
-            switch ($extension) {
-                case 'php':
-                    $this->sourceType = self::TYPE_PLUGIN;
-                    $this->wordpressHeaders = [
-                        'Name'        => 'Plugin Name',
-                        'URI'         => 'Plugin URI',
-                        'Description' => 'Description',
-                    ];
-                    break;
-                case 'css':
-                    $this->sourceType = self::TYPE_THEME;
-                    $this->wordpressHeaders = [
-                        'Name' => 'Theme Name',
-                        'URI'  => 'Theme URI',
-                    ];
-                    break;
-                default:
-                    $this->error(sprintf(
-                        "php and css are the only supported file types for WPHeader (%s given)",
-                        $extension
-                    ));
+            if (!file_exists($this->headerFile)) {
+                $this->warn(sprintf('WordPress header file does not exists: %s', $this->headerFile));
+                $this->headerFile = null;
+            } else {
+                // Prepare headers to extract
+                $extension = pathinfo($this->headerFile, PATHINFO_EXTENSION);
+                switch ($extension) {
+                    case 'php':
+                        $this->sourceType = self::TYPE_PLUGIN;
+                        $this->wordpressHeaders = [
+                            'Name'        => 'Plugin Name',
+                            'URI'         => 'Plugin URI',
+                            'Description' => 'Description',
+                        ];
+                        break;
+                    case 'css':
+                        $this->sourceType = self::TYPE_THEME;
+                        $this->wordpressHeaders = [
+                            'Name' => 'Theme Name',
+                            'URI'  => 'Theme URI',
+                        ];
+                        break;
+                    default:
+                        $this->error(sprintf(
+                            "php and css are the only supported file types for WPHeader (%s given)",
+                            $extension
+                        ));
+                }
+                $this->wordpressHeaders['Author'] = 'Author';
+                $this->wordpressHeaders['Author URI'] = 'Author URI';
             }
-            $this->wordpressHeaders['Author'] = 'Author';
-            $this->wordpressHeaders['Author URI'] = 'Author URI';
-        }
-
-        // Project Id
-        if (array_key_exists('Project-Id-Version', $this->rawHeaders)) {
-            $this->projectId = $this->rawHeaders['Project-Id-Version'];
-        }
-
-        // xgettext flags
-        if (array_key_exists('X-Poedit-Flags-xgettext', $this->rawHeaders)) {
-            $this->xgettextFlags = $this->rawHeaders['X-Poedit-Flags-xgettext'];
+        } else {
+            $this->warn('Can not find X-Poedit-WPHeader, theme or plugin metadata wont be extracted');
         }
     }
 
     /**
-     * @return string The find command to execute
+     * @return array The files to extract from
      */
-    private function getFindCommand()
+    private function getFilesToExtractFrom()
     {
         $findCommand = sprintf(
             'find %s -iname "*.php" -type f %s',
@@ -226,7 +225,7 @@ class XGetPress
             }, $this->excludedPaths)))
         );
 
-        return $findCommand;
+        return $this->command($findCommand);
     }
 
     /**
@@ -235,8 +234,23 @@ class XGetPress
      */
     private function extractTranslatableStringsFromSources($outputFile)
     {
+        $files = $this->getFilesToExtractFrom();
+
+        if (!$files) {
+            $message = 'No files matching your search and exclude rules have been found';
+
+            if (!$this->headerFile) {
+                // no header file either, nothing to do
+                $this->error($message);
+            }
+
+            // add header file for xgettext to run anyway
+            $files[] = $this->headerFile;
+            $this->warn($message);
+        }
+
         $xgettextCommand = sprintf(
-            'xgettext --language=PHP %1$s %2$s --from-code=%3$s %4$s -o "%5$s" `%6$s`',
+            'xgettext --language=PHP %1$s %2$s --from-code=%3$s %4$s -o "%5$s" %6$s',
             $this->projectId ? ' --package-name="' . $this->projectId . '"' : '',
             $this->xgettextFlags,
             $this->sourcesCharset,
@@ -244,7 +258,9 @@ class XGetPress
                 return '-k' . $keyword;
             }, $this->keywords)),
             $outputFile,
-            $this->getFindCommand()
+            implode(' ', array_map(function ($path) {
+                return '"' . $path . '"';
+            }, $files)) . ' ' . $this->headerFile
         );
 
         $this->command($xgettextCommand, 'extraction failed (xgettext)');
@@ -310,12 +326,18 @@ class XGetPress
         $this->command($cleanCommand, 'cleaning failed (msguniq)');
     }
 
+    /**
+     * @param string $command Command to execute
+     * @param string $errorMessage Message to display on error
+     * @return array The command output (one item per output line)
+     */
     private function command($command, $errorMessage = '')
     {
-        passthru($command, $returnVar);
+        exec($command, $output, $returnVar);
         if ($returnVar !== 0) {
             $this->error($errorMessage ? $errorMessage : 'command failed', $returnVar, $command);
         }
+        return $output;
     }
 
     private function updateSource($outputFile)
@@ -330,7 +352,6 @@ class XGetPress
 
         // Display changes on STDOUT
         $diffCommand = sprintf('diff --color=always "%s" "%s"', $this->inputFile, $tempFile);
-        echo $diffCommand . "\n";
         passthru($diffCommand);
 
         // Update input file
