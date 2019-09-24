@@ -204,7 +204,7 @@ class XGetPress
             'find %s -iname "*.php" -type f %s',
             // search paths
             implode(' ', array_map(function ($path) {
-                return $path == '.' ? $path : './' . $path;
+                return '"' . ($path == '.' ? $path : './' . $path) . '"';
             }, $this->searchPaths)),
             // excluded paths
             implode(' ', array_filter(array_map(function ($value) {
@@ -230,7 +230,7 @@ class XGetPress
     private function extractTranslatableStringsFromSources($outputFile)
     {
         $xgettextCommand = sprintf(
-            'xgettext --language=PHP %1$s %2$s --from-code=%3$s %4$s -o %5$s `%6$s`',
+            'xgettext --language=PHP %1$s %2$s --from-code=%3$s %4$s -o "%5$s" `%6$s`',
             $this->projectId ? ' --package-name="' . $this->projectId . '"' : '',
             $this->xgettextFlags,
             $this->encoding,
@@ -296,7 +296,7 @@ class XGetPress
     {
         $tempFile = tempnam('/tmp/', 'xgetpress');
         $cleanCommand = sprintf(
-            'msguniq -t %2$s --color=never --sort-output %1$s | grep -v -P "^#. #-#-#-#-#" > %3$s; mv %3$s %1$s',
+            'msguniq -t %2$s --color=never --sort-output "%1$s" | grep -v -P "^#. #-#-#-#-#" > "%3$s"; mv "%3$s" "%1$s"',
             $outputFile,
             $this->encoding,
             $tempFile
@@ -319,11 +319,13 @@ class XGetPress
         copy($this->inputFile, $tempFile);
 
         // Update temp file
-        $updateCommand = sprintf('msgmerge --previous -F -U %s %s', $tempFile, $outputFile);
+        $updateCommand = sprintf('msgmerge --previous -F -U "%s" "%s"', $tempFile, $outputFile);
         $this->command($updateCommand, 'merge with input file failed (msgmerge)');
 
         // Display changes on STDOUT
-        passthru(sprintf('diff --color=always %s %s', $this->inputFile, $tempFile));
+        $diffCommand = sprintf('diff --color=always "%s" "%s"', $this->inputFile, $tempFile);
+        echo $diffCommand . "\n";
+        passthru($diffCommand);
 
         // Update input file
         copy($tempFile, $this->inputFile);
